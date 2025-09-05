@@ -330,8 +330,8 @@ fn get_indices(
     fields: &ArrowFields,
     mask_indices: &mut Vec<usize>,
 ) -> DeltaResult<(usize, Vec<ReorderIndex>)> {
-    let mut found_fields = HashSet::with_capacity(requested_schema.fields.len());
-    let mut reorder_indices = Vec::with_capacity(requested_schema.fields.len());
+    let mut found_fields = HashSet::with_capacity(requested_schema.fields_len());
+    let mut reorder_indices = Vec::with_capacity(requested_schema.fields_len());
     let mut parquet_offset = start_parquet_offset;
     // for each field, get its position in the parquet (via enumerate), a reference to the arrow
     // field, and info about where it appears in the requested_schema, or None if the field is not
@@ -507,10 +507,17 @@ fn get_indices(
         }
     }
 
-    if found_fields.len() != requested_schema.fields.len() {
+    if found_fields.len() != requested_schema.fields_len() {
         // some fields are missing, but they might be nullable, need to insert them into the reorder_indices
         for (requested_position, field) in requested_schema.fields().enumerate() {
             if !found_fields.contains(field.name()) {
+                if let Some(metadata_spec) = field.get_metadata_column_spec() {
+                    // We don't support reading any metadata columns yet
+                    // TODO: Implement row index support for the Parquet reader
+                    return Err(Error::Generic(format!(
+                        "Metadata column {metadata_spec:?} is not supported by the default parquet reader"
+                    )));
+                }
                 if field.nullable {
                     debug!("Inserting missing and nullable field: {}", field.name());
                     reorder_indices.push(ReorderIndex::missing(
@@ -547,6 +554,7 @@ fn match_parquet_fields<'k, 'p>(
     let init_field_map = || {
         kernel_schema
             .fields()
+            .filter(|field| !field.is_metadata_column())
             .filter_map(
                 |field| match field.get_config_value(&ColumnMetadataKey::ParquetFieldId) {
                     Some(MetadataValue::Number(fid)) => Some((*fid, field.name())),
@@ -582,9 +590,8 @@ fn match_parquet_fields<'k, 'p>(
             // Map the parquet ArrowField to the matching kernel KernelFieldInfo if present.
             let kernel_field_info =
                 kernel_schema
-                    .fields
-                    .get_full(field_name)
-                    .map(|(idx, _name, field)| KernelFieldInfo {
+                    .field_with_index(field_name)
+                    .map(|(idx, field)| KernelFieldInfo {
                         parquet_index: idx,
                         field,
                     });
