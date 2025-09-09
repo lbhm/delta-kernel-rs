@@ -21,7 +21,9 @@ use super::file_stream::{FileOpenFuture, FileOpener, FileStream};
 use super::UrlExt;
 use crate::engine::arrow_conversion::TryIntoArrow as _;
 use crate::engine::arrow_data::ArrowEngineData;
-use crate::engine::arrow_utils::{fixup_parquet_read, generate_mask, get_requested_indices};
+use crate::engine::arrow_utils::{
+    fixup_parquet_read, generate_mask, get_requested_indices, RowIndexBuilder,
+};
 use crate::engine::default::executor::TaskExecutor;
 use crate::engine::parquet_row_group_skipping::ParquetRowGroupSkipping;
 use crate::schema::SchemaRef;
@@ -323,16 +325,19 @@ impl FileOpener for ParquetOpener {
                 builder = builder.with_projection(mask)
             }
 
+            let mut row_indexes = RowIndexBuilder::new(builder.metadata().row_groups());
             if let Some(ref predicate) = predicate {
-                builder = builder.with_row_group_filter(predicate);
+                builder = builder.with_row_group_filter(predicate, &mut row_indexes);
             }
             if let Some(limit) = limit {
                 builder = builder.with_limit(limit)
             }
 
+            let mut row_indexes = row_indexes.into_iter();
             let stream = builder.with_batch_size(batch_size).build()?;
 
-            let stream = stream.map(move |rbr| fixup_parquet_read(rbr?, &requested_ordering));
+            let stream = stream
+                .map(move |rbr| fixup_parquet_read(rbr?, &requested_ordering, &mut row_indexes));
             Ok(stream.boxed())
         }))
     }
@@ -391,8 +396,9 @@ impl FileOpener for PresignedUrlOpener {
                 builder = builder.with_projection(mask)
             }
 
+            let mut row_indexes = RowIndexBuilder::new(builder.metadata().row_groups());
             if let Some(ref predicate) = predicate {
-                builder = builder.with_row_group_filter(predicate);
+                builder = builder.with_row_group_filter(predicate, &mut row_indexes);
             }
             if let Some(limit) = limit {
                 builder = builder.with_limit(limit)
@@ -400,8 +406,10 @@ impl FileOpener for PresignedUrlOpener {
 
             let reader = builder.with_batch_size(batch_size).build()?;
 
+            let mut row_indexes = row_indexes.into_iter();
             let stream = futures::stream::iter(reader);
-            let stream = stream.map(move |rbr| fixup_parquet_read(rbr?, &requested_ordering));
+            let stream = stream
+                .map(move |rbr| fixup_parquet_read(rbr?, &requested_ordering, &mut row_indexes));
             Ok(stream.boxed())
         }))
     }
