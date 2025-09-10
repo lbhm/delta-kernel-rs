@@ -181,12 +181,13 @@ impl TryFromKernel<&DataType> for ArrowDataType {
 
 impl TryFromArrow<&ArrowSchema> for StructType {
     fn try_from_arrow(arrow_schema: &ArrowSchema) -> Result<Self, ArrowError> {
-        StructType::try_new(
+        StructType::try_from_iter(
             arrow_schema
                 .fields()
                 .iter()
                 .map(|field| field.as_ref().try_into_kernel()),
         )
+        .map_err(|e| ArrowError::from_external_error(e.into()))
     }
 }
 
@@ -245,9 +246,10 @@ impl TryFromArrow<&ArrowDataType> for DataType {
             {
                 Ok(DataType::TIMESTAMP)
             }
-            ArrowDataType::Struct(fields) => DataType::try_struct_type(
+            ArrowDataType::Struct(fields) => DataType::try_struct_type_from_iter(
                 fields.iter().map(|field| field.as_ref().try_into_kernel()),
-            ),
+            )
+            .map_err(|e| ArrowError::from_external_error(e.into())),
             ArrowDataType::List(field) => Ok(ArrayType::new(
                 (*field).data_type().try_into_kernel()?,
                 (*field).is_nullable(),
@@ -327,11 +329,11 @@ mod tests {
         let unshredded_variant = DataType::unshredded_variant();
         let unshredded_variant_arrow = ArrowDataType::try_from_kernel(&unshredded_variant)?;
         assert!(unshredded_variant_arrow == unshredded_variant_arrow_type());
-        let shredded_variant = DataType::variant_type([
+        let shredded_variant = DataType::try_variant_type([
             StructField::nullable("metadata", DataType::BINARY),
             StructField::nullable("value", DataType::BINARY),
             StructField::nullable("typed_value", DataType::INTEGER),
-        ]);
+        ])?;
         let shredded_variant_arrow = ArrowDataType::try_from_kernel(&shredded_variant);
         assert!(shredded_variant_arrow
             .unwrap_err()

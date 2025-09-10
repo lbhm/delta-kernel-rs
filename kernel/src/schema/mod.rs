@@ -371,16 +371,47 @@ pub struct StructType {
 }
 
 impl StructType {
-    pub fn new(fields: impl IntoIterator<Item = StructField>) -> Self {
+    /// Creates a new [`StructType`] from the given fields.
+    ///
+    /// Returns an error if:
+    /// - the schema contains duplicate field names
+    pub fn try_new(fields: impl IntoIterator<Item = StructField>) -> DeltaResult<Self> {
+        let mut field_map = IndexMap::new();
+
+        // Validate duplicates during insertion
+        for field in fields {
+            // Check for duplicate field names
+            if let Some(dup) = field_map.insert(field.name.clone(), field) {
+                return Err(Error::schema(format!("Duplicate field name: {}", dup.name)));
+            }
+        }
+
+        Ok(Self {
+            type_name: "struct".into(),
+            fields: field_map,
+        })
+    }
+
+    /// Creates a new [`StructType`] from a fallible iterator of fields.
+    ///
+    /// This constructor collects all fields from the iterator, returning the first error
+    /// encountered, or a new [`StructType`] if all fields are successfully collected and validated.
+    pub fn try_from_iter<E: Into<Error>>(
+        fields: impl IntoIterator<Item = Result<StructField, E>>,
+    ) -> DeltaResult<Self> {
+        let fields: Vec<_> = fields.into_iter().try_collect().map_err(Into::into)?;
+        Self::try_new(fields)
+    }
+
+    /// Creates a new [`StructType`] from the given fields without validating them.
+    ///
+    /// This should only be used when you are sure that the fields are valid.
+    /// Refer to [`StructType::try_new`] for more details on the validation checks.
+    pub fn new_unchecked(fields: impl IntoIterator<Item = StructField>) -> Self {
         Self {
             type_name: "struct".into(),
             fields: fields.into_iter().map(|f| (f.name.clone(), f)).collect(),
         }
-    }
-
-    pub fn try_new<E>(fields: impl IntoIterator<Item = Result<StructField, E>>) -> Result<Self, E> {
-        let fields: Vec<_> = fields.into_iter().try_collect()?;
-        Ok(Self::new(fields))
     }
 
     /// Get a [`StructType`] containing [`StructField`]s of the given names. The order of fields in
@@ -393,7 +424,7 @@ impl StructType {
                 .cloned()
                 .ok_or_else(|| Error::missing_column(name.as_ref()))
         });
-        Self::try_new(fields)
+        Self::try_from_iter(fields)
     }
 
     /// Get a [`SchemaRef`] containing [`StructField`]s of the given names. The order of fields in
@@ -454,7 +485,7 @@ impl StructType {
         let fields = self
             .fields()
             .map(|field| field.make_physical(column_mapping_mode));
-        Self::new(fields)
+        Self::new_unchecked(fields)
     }
 }
 
@@ -623,7 +654,7 @@ impl MapType {
 
     /// Create a schema assuming the map is stored as a struct with the specified key and value field names
     pub fn as_struct_schema(&self, key_name: String, val_name: String) -> Schema {
-        StructType::new([
+        StructType::new_unchecked([
             StructField::not_null(key_name, self.key_type.clone()),
             StructField::new(val_name, self.value_type.clone(), self.value_contains_null),
         ])
@@ -868,30 +899,35 @@ impl DataType {
     }
 
     /// Create a new struct type with the given fields.
-    pub fn struct_type(fields: impl IntoIterator<Item = StructField>) -> Self {
-        StructType::new(fields).into()
+    pub fn try_struct_type(fields: impl IntoIterator<Item = StructField>) -> DeltaResult<Self> {
+        Ok(StructType::try_new(fields)?.into())
     }
 
     /// Create a new struct type from a fallible iterator of fields.
-    pub fn try_struct_type<E>(
+    pub fn try_struct_type_from_iter<E: Into<Error>>(
         fields: impl IntoIterator<Item = Result<StructField, E>>,
-    ) -> Result<Self, E> {
-        Ok(StructType::try_new(fields)?.into())
+    ) -> DeltaResult<Self> {
+        StructType::try_from_iter(fields).map(Self::from)
+    }
+
+    /// Create a new struct type with the given fields without validating them.
+    pub fn struct_type_unchecked(fields: impl IntoIterator<Item = StructField>) -> Self {
+        StructType::new_unchecked(fields).into()
     }
 
     /// Create a new unshredded [`DataType::Variant`]. This data type is a struct of two not-null
     /// binary fields: `metadata` and `value`.
     pub fn unshredded_variant() -> Self {
-        DataType::variant_type([
+        DataType::Variant(Box::new(StructType::new_unchecked([
             StructField::not_null("metadata", DataType::BINARY),
             StructField::not_null("value", DataType::BINARY),
-        ])
+        ])))
     }
 
     /// Create a new [`DataType::Variant`] from the provided fields. For unshredded variants, you
     /// should prefer using [`DataType::unshredded_variant`].
-    pub fn variant_type(fields: impl IntoIterator<Item = StructField>) -> Self {
-        DataType::Variant(Box::new(StructType::new(fields)))
+    pub fn try_variant_type(fields: impl IntoIterator<Item = StructField>) -> DeltaResult<Self> {
+        Ok(DataType::Variant(Box::new(StructType::try_new(fields)?)))
     }
 
     /// Attempt to convert this data type to a [`PrimitiveType`]. Returns `None` if this is a
@@ -1056,7 +1092,7 @@ pub trait SchemaTransform<'a> {
             None
         } else if num_borrowed < stype.fields.len() {
             // At least one field was changed or filtered out, so make a new struct
-            Some(Owned(StructType::new(
+            Some(Owned(StructType::new_unchecked(
                 fields.into_iter().map(|f| f.into_owned()),
             )))
         } else {
@@ -1512,11 +1548,11 @@ mod tests {
 
     #[test]
     fn test_depth_checker() {
-        let schema = DataType::struct_type([
+        let schema = DataType::try_struct_type([
             StructField::nullable(
                 "a",
                 ArrayType::new(
-                    DataType::struct_type([
+                    DataType::try_struct_type([
                         StructField::nullable("w", DataType::LONG),
                         StructField::nullable("x", ArrayType::new(DataType::LONG, true)),
                         StructField::nullable(
@@ -1525,18 +1561,20 @@ mod tests {
                         ),
                         StructField::nullable(
                             "z",
-                            DataType::struct_type([
+                            DataType::try_struct_type([
                                 StructField::nullable("n", DataType::LONG),
                                 StructField::nullable("m", DataType::STRING),
-                            ]),
+                            ])
+                            .unwrap(),
                         ),
-                    ]),
+                    ])
+                    .unwrap(),
                     true,
                 ),
             ),
             StructField::nullable(
                 "b",
-                DataType::struct_type([
+                DataType::try_struct_type([
                     StructField::nullable("o", ArrayType::new(DataType::LONG, true)),
                     StructField::nullable(
                         "p",
@@ -1544,32 +1582,37 @@ mod tests {
                     ),
                     StructField::nullable(
                         "q",
-                        DataType::struct_type([
+                        DataType::try_struct_type([
                             StructField::nullable(
                                 "s",
-                                DataType::struct_type([
+                                DataType::try_struct_type([
                                     StructField::nullable("u", DataType::LONG),
                                     StructField::nullable("v", DataType::LONG),
-                                ]),
+                                ])
+                                .unwrap(),
                             ),
                             StructField::nullable("t", DataType::LONG),
-                        ]),
+                        ])
+                        .unwrap(),
                     ),
                     StructField::nullable("r", DataType::LONG),
-                ]),
+                ])
+                .unwrap(),
             ),
             StructField::nullable(
                 "c",
                 MapType::new(
                     DataType::LONG,
-                    DataType::struct_type([
+                    DataType::try_struct_type([
                         StructField::nullable("f", DataType::LONG),
                         StructField::nullable("g", DataType::STRING),
-                    ]),
+                    ])
+                    .unwrap(),
                     true,
                 ),
             ),
-        ]);
+        ])
+        .unwrap();
 
         // Similar to SchemaDepthChecker::check, but also returns call count
         let check_with_call_count =
@@ -1617,16 +1660,16 @@ mod tests {
 
     #[test]
     fn test_fields_len() {
-        let schema = StructType::new([]);
+        let schema = StructType::new_unchecked([]);
         assert!(schema.fields_len() == 0);
-        let schema = StructType::new([
+        let schema = StructType::new_unchecked([
             StructField::nullable("a", DataType::LONG),
             StructField::nullable("b", DataType::LONG),
             StructField::nullable("c", DataType::LONG),
             StructField::nullable("d", DataType::LONG),
         ]);
         assert_eq!(schema.fields_len(), 4);
-        let schema = StructType::new([
+        let schema = StructType::new_unchecked([
             StructField::nullable("b", DataType::LONG),
             StructField::not_null("b", DataType::LONG),
             StructField::nullable("c", DataType::LONG),
@@ -1638,7 +1681,7 @@ mod tests {
     #[test]
     fn test_has_invariants() {
         // Schema with no invariants
-        let schema = StructType::new([
+        let schema = StructType::new_unchecked([
             StructField::nullable("a", DataType::STRING),
             StructField::nullable("b", DataType::INTEGER),
         ]);
@@ -1651,23 +1694,25 @@ mod tests {
             MetadataValue::String("c > 0".to_string()),
         );
 
-        let schema = StructType::new([StructField::nullable("a", DataType::STRING), field]);
+        let schema =
+            StructType::new_unchecked([StructField::nullable("a", DataType::STRING), field]);
         assert!(InvariantChecker::has_invariants(&schema));
 
         // Schema with nested invariant in a struct
         let nested_field = StructField::nullable(
             "nested_c",
-            DataType::struct_type([{
+            DataType::try_struct_type([{
                 let mut field = StructField::nullable("d", DataType::INTEGER);
                 field.metadata.insert(
                     ColumnMetadataKey::Invariants.as_ref().to_string(),
                     MetadataValue::String("d > 0".to_string()),
                 );
                 field
-            }]),
+            }])
+            .unwrap(),
         );
 
-        let schema = StructType::new([
+        let schema = StructType::new_unchecked([
             StructField::nullable("a", DataType::STRING),
             StructField::nullable("b", DataType::INTEGER),
             nested_field,
@@ -1678,19 +1723,20 @@ mod tests {
         let array_field = StructField::nullable(
             "array_field",
             ArrayType::new(
-                DataType::struct_type([{
+                DataType::try_struct_type([{
                     let mut field = StructField::nullable("d", DataType::INTEGER);
                     field.metadata.insert(
                         ColumnMetadataKey::Invariants.as_ref().to_string(),
                         MetadataValue::String("d > 0".to_string()),
                     );
                     field
-                }]),
+                }])
+                .unwrap(),
                 true,
             ),
         );
 
-        let schema = StructType::new([
+        let schema = StructType::new_unchecked([
             StructField::nullable("a", DataType::STRING),
             StructField::nullable("b", DataType::INTEGER),
             array_field,
@@ -1702,19 +1748,20 @@ mod tests {
             "map_field",
             MapType::new(
                 DataType::STRING,
-                DataType::struct_type([{
+                DataType::try_struct_type([{
                     let mut field = StructField::nullable("d", DataType::INTEGER);
                     field.metadata.insert(
                         ColumnMetadataKey::Invariants.as_ref().to_string(),
                         MetadataValue::String("d > 0".to_string()),
                     );
                     field
-                }]),
+                }])
+                .unwrap(),
                 true,
             ),
         );
 
-        let schema = StructType::new([
+        let schema = StructType::new_unchecked([
             StructField::nullable("a", DataType::STRING),
             StructField::nullable("b", DataType::INTEGER),
             map_field,
