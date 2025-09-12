@@ -152,7 +152,7 @@ impl IntoIterator for RowIndexBuilder {
 pub(crate) fn fixup_parquet_read<T>(
     batch: RecordBatch,
     requested_ordering: &[ReorderIndex],
-    row_indexes: &mut impl Iterator<Item = i64>,
+    row_indexes: &mut <RowIndexBuilder as IntoIterator>::IntoIter,
 ) -> DeltaResult<T>
 where
     StructArray: Into<T>,
@@ -735,7 +735,7 @@ type FieldArrayOpt = Option<(Arc<ArrowField>, Arc<dyn ArrowArray>)>;
 pub(crate) fn reorder_struct_array(
     input_data: StructArray,
     requested_ordering: &[ReorderIndex],
-    row_indexes: &mut impl Iterator<Item = i64>,
+    row_indexes: &mut <RowIndexBuilder as IntoIterator>::IntoIter,
 ) -> DeltaResult<StructArray> {
     debug!("Reordering {input_data:?} with ordering: {requested_ordering:?}");
     if !ordering_needs_transform(requested_ordering) {
@@ -856,7 +856,7 @@ fn reorder_list<O: OffsetSizeTrait>(
         let result_array = Arc::new(reorder_struct_array(
             struct_array,
             children,
-            &mut std::iter::empty(),
+            &mut <RowIndexBuilder as IntoIterator>::IntoIter::default(),
         )?);
         let new_list_field = Arc::new(ArrowField::new_struct(
             list_field.name(),
@@ -888,7 +888,11 @@ fn reorder_map(
     children: &[ReorderIndex],
 ) -> DeltaResult<FieldArrayOpt> {
     let (map_field, offset_buffer, struct_array, null_buf, ordered) = map_array.into_parts();
-    let result_array = reorder_struct_array(struct_array, children, &mut std::iter::empty())?;
+    let result_array = reorder_struct_array(
+        struct_array,
+        children,
+        &mut <RowIndexBuilder as IntoIterator>::IntoIter::default(),
+    )?;
     let result_fields = result_array.fields();
     let new_map_field = Arc::new(ArrowField::new_struct(
         map_field.name(),
@@ -2234,7 +2238,8 @@ mod tests {
     fn simple_reorder_struct() {
         let arry = make_struct_array();
         let reorder = vec![ReorderIndex::identity(1), ReorderIndex::identity(0)];
-        let ordered = reorder_struct_array(arry, &reorder, &mut std::iter::empty()).unwrap();
+        let ordered =
+            reorder_struct_array(arry, &reorder, &mut vec![].into_iter().flatten()).unwrap();
         assert_eq!(ordered.column_names(), vec!["c", "b"]);
     }
 
@@ -2282,7 +2287,8 @@ mod tests {
                 ],
             ),
         ];
-        let ordered = reorder_struct_array(nested, &reorder, &mut std::iter::empty()).unwrap();
+        let ordered =
+            reorder_struct_array(nested, &reorder, &mut vec![].into_iter().flatten()).unwrap();
         assert_eq!(ordered.column_names(), vec!["struct2", "struct1"]);
         let ordered_s2 = ordered.column(0).as_struct();
         assert_eq!(ordered_s2.column_names(), vec!["b", "c", "s"]);
@@ -2330,7 +2336,8 @@ mod tests {
             vec![ReorderIndex::identity(1), ReorderIndex::identity(0)],
         )];
         let ordered =
-            reorder_struct_array(struct_array, &reorder, &mut std::iter::empty()).unwrap();
+            reorder_struct_array(struct_array, &reorder, &mut vec![].into_iter().flatten())
+                .unwrap();
         let ordered_list_col = ordered.column(0).as_list::<i32>();
         for i in 0..ordered_list_col.len() {
             let array_item = ordered_list_col.value(i);
@@ -2397,7 +2404,8 @@ mod tests {
             ),
         ];
         let ordered =
-            reorder_struct_array(struct_array, &reorder, &mut std::iter::empty()).unwrap();
+            reorder_struct_array(struct_array, &reorder, &mut vec![].into_iter().flatten())
+                .unwrap();
         assert_eq!(ordered.column_names(), vec!["map", "i"]);
         if let ArrowDataType::Map(field, _) = ordered.column(0).data_type() {
             if let ArrowDataType::Struct(fields) = field.data_type() {
