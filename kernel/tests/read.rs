@@ -1487,67 +1487,48 @@ async fn test_unsupported_metadata_columns() -> Result<(), Box<dyn std::error::E
         Arc::new(TokioBackgroundExecutor::new()),
     ));
 
-    // Test reading the RowId metadata column (should fail)
-    let snapshot1 = Snapshot::builder(location.clone()).build(engine.as_ref())?;
-    let schema = Arc::new(StructType::try_new([
-        StructField::nullable("id", DataType::INTEGER),
-        StructField::create_metadata_column("row_id", MetadataColumnSpec::RowId),
-    ])?);
-    let scan = snapshot1.into_scan_builder().with_schema(schema).build()?;
-    let stream = scan.execute(engine.clone())?;
-
-    let mut found_error = false;
-    for scan_result in stream {
-        match scan_result {
-            Err(e) => {
-                let error_msg = e.to_string();
-                println!("error_msg: {}", error_msg);
-                if error_msg.contains("RowId") && error_msg.contains("not supported") {
-                    found_error = true;
-                    break;
-                }
-            }
-            Ok(_) => {
-                panic!("Expected error for RowId metadata column, but scan succeeded");
-            }
-        }
-    }
-    assert!(
-        found_error,
-        "Expected error about RowId not being supported"
-    );
-
-    // Test reading the RowCommitVersion metadata column (should fail)
-    let snapshot2 = Snapshot::builder(location.clone()).build(engine.as_ref())?;
-    let schema = Arc::new(StructType::try_new([
-        StructField::nullable("id", DataType::INTEGER),
-        StructField::create_metadata_column(
+    // Test that unsupported metadata columns fail with appropriate errors
+    let test_cases = [
+        ("row_id", MetadataColumnSpec::RowId, "RowId"),
+        (
             "row_commit_version",
             MetadataColumnSpec::RowCommitVersion,
+            "RowCommitVersion",
         ),
-    ])?);
-    let scan = snapshot2.into_scan_builder().with_schema(schema).build()?;
-    let stream = scan.execute(engine)?;
+    ];
+    for (column_name, metadata_spec, error_text) in test_cases {
+        let snapshot = Snapshot::builder(location.clone()).build(engine.as_ref())?;
+        let schema = Arc::new(StructType::try_new([
+            StructField::nullable("id", DataType::INTEGER),
+            StructField::create_metadata_column(column_name, metadata_spec),
+        ])?);
+        let scan = snapshot.into_scan_builder().with_schema(schema).build()?;
+        let stream = scan.execute(engine.clone())?;
 
-    let mut found_error = false;
-    for scan_result in stream {
-        match scan_result {
-            Err(e) => {
-                let error_msg = e.to_string();
-                if error_msg.contains("RowCommitVersion") && error_msg.contains("not supported") {
-                    found_error = true;
-                    break;
+        let mut found_error = false;
+        for scan_result in stream {
+            match scan_result {
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    if error_msg.contains(error_text) && error_msg.contains("not supported") {
+                        found_error = true;
+                        break;
+                    }
+                }
+                Ok(_) => {
+                    panic!(
+                        "Expected error for {} metadata column, but scan succeeded",
+                        error_text
+                    );
                 }
             }
-            Ok(_) => {
-                panic!("Expected error for RowCommitVersion metadata column, but scan succeeded");
-            }
         }
+        assert!(
+            found_error,
+            "Expected error about {} not being supported",
+            error_text
+        );
     }
-    assert!(
-        found_error,
-        "Expected error about RowCommitVersion not being supported"
-    );
 
     Ok(())
 }

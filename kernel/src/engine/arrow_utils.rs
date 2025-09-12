@@ -568,32 +568,32 @@ fn get_indices(
         // some fields are missing, but they might be nullable or metadata columns, need to insert them into the reorder_indices
         for (requested_position, field) in requested_schema.fields().enumerate() {
             if !found_fields.contains(field.name()) {
-                if let Some(metadata_spec) = field.get_metadata_column_spec() {
-                    match metadata_spec {
-                        MetadataColumnSpec::RowIndex => {
-                            debug!("Inserting a row index column: {}", field.name());
-                            reorder_indices.push(ReorderIndex::row_index(
-                                requested_position,
-                                Arc::new(field.try_into_arrow()?),
-                            ));
-                        }
-                        _ => {
-                            return Err(Error::Generic(format!(
-                                "Metadata column {metadata_spec:?} is not supported by the default parquet reader"
-                            )));
-                        }
+                match field.get_metadata_column_spec() {
+                    Some(MetadataColumnSpec::RowIndex) => {
+                        debug!("Inserting a row index column: {}", field.name());
+                        reorder_indices.push(ReorderIndex::row_index(
+                            requested_position,
+                            Arc::new(field.try_into_arrow()?),
+                        ));
                     }
-                } else if field.nullable {
-                    debug!("Inserting missing and nullable field: {}", field.name());
-                    reorder_indices.push(ReorderIndex::missing(
-                        requested_position,
-                        Arc::new(field.try_into_arrow()?),
-                    ));
-                } else {
-                    return Err(Error::Generic(format!(
-                        "Requested field not found in parquet schema, and field is not nullable: {}",
-                        field.name()
-                    )));
+                    Some(metadata_spec) => {
+                        return Err(Error::Generic(format!(
+                            "Metadata column {metadata_spec:?} is not supported by the default parquet reader"
+                        )));
+                    }
+                    None if field.nullable => {
+                        debug!("Inserting missing and nullable field: {}", field.name());
+                        reorder_indices.push(ReorderIndex::missing(
+                            requested_position,
+                            Arc::new(field.try_into_arrow()?),
+                        ));
+                    }
+                    None => {
+                        return Err(Error::Generic(format!(
+                            "Requested field not found in parquet schema, and field is not nullable: {}",
+                            field.name()
+                        )));
+                    }
                 }
             }
         }
@@ -821,15 +821,12 @@ pub(crate) fn reorder_struct_array(
                         row_indexes.take(num_rows).collect();
                     require!(
                         row_index_array.len() == num_rows,
-                        Error::internal_error(format!(
-                            "Row index iterator exhausted after only {} of {} rows",
-                            row_index_array.len(),
-                            num_rows
-                        ))
+                        Error::internal_error(
+                            "Row index iterator exhausted before reaching the end of the file"
+                        )
                     );
-                    let field = field.clone(); // cheap Arc clone
                     final_fields_cols[reorder_index.index] =
-                        Some((field, Arc::new(row_index_array)));
+                        Some((Arc::clone(field), Arc::new(row_index_array)));
                 }
             }
         }
@@ -856,9 +853,6 @@ fn reorder_list<O: OffsetSizeTrait>(
     let (list_field, offset_buffer, maybe_sa, null_buf) = list_array.into_parts();
     if let Some(struct_array) = maybe_sa.as_struct_opt() {
         let struct_array = struct_array.clone();
-        // WARNING: We cannot naively plumb through our caller's row index iterator, because each
-        // array element of a given row must replicate the row's index and empty arrays must drop
-        // that row's index. For now, just don't support it (Delta doesn't need the capability).
         let result_array = Arc::new(reorder_struct_array(
             struct_array,
             children,
