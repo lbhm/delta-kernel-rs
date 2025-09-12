@@ -868,8 +868,8 @@ impl StateInfo {
         column_mapping_mode: ColumnMappingMode,
     ) -> DeltaResult<Self> {
         let mut have_partition_cols = false;
-        let mut read_fields = Vec::with_capacity(logical_schema.fields_len());
-        let mut read_field_names = HashSet::with_capacity(logical_schema.fields_len());
+        let mut read_fields = Vec::with_capacity(logical_schema.num_fields());
+        let mut read_field_names = HashSet::with_capacity(logical_schema.num_fields());
 
         // Loop over all selected fields and note if they are columns that will be read from the
         // parquet file ([`ColumnType::Selected`]) or if they are partition columns and will need to

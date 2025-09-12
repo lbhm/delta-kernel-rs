@@ -120,7 +120,7 @@ impl EnsureDataTypes {
                 }
 
                 // require that we found the number of fields that we requested.
-                require!(kernel_fields.fields_len() == found_fields, {
+                require!(kernel_fields.num_fields() == found_fields, {
                     let arrow_field_map: HashSet<&String> =
                         HashSet::from_iter(arrow_fields.iter().map(|f| f.name()));
                     let missing_field_names = kernel_fields

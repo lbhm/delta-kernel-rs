@@ -679,7 +679,7 @@ impl StructType {
     }
 
     /// Gets the number of fields in this struct type.
-    pub fn fields_len(&self) -> usize {
+    pub fn num_fields(&self) -> usize {
         // O(1) for indexmap
         self.fields.len()
     }
@@ -1951,23 +1951,23 @@ mod tests {
     }
 
     #[test]
-    fn test_fields_len() {
+    fn test_num_fields() {
         let schema = StructType::new_unchecked([]);
-        assert!(schema.fields_len() == 0);
+        assert!(schema.num_fields() == 0);
         let schema = StructType::new_unchecked([
             StructField::nullable("a", DataType::LONG),
             StructField::nullable("b", DataType::LONG),
             StructField::nullable("c", DataType::LONG),
             StructField::nullable("d", DataType::LONG),
         ]);
-        assert_eq!(schema.fields_len(), 4);
+        assert_eq!(schema.num_fields(), 4);
         let schema = StructType::new_unchecked([
             StructField::nullable("b", DataType::LONG),
             StructField::not_null("b", DataType::LONG),
             StructField::nullable("c", DataType::LONG),
             StructField::nullable("c", DataType::LONG),
         ]);
-        assert_eq!(schema.fields_len(), 2);
+        assert_eq!(schema.num_fields(), 2);
     }
 
     #[test]
