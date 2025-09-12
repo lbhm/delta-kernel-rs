@@ -2,7 +2,7 @@
 
 use std::{
     backtrace::{Backtrace, BacktraceStatus},
-    num::ParseIntError,
+    num::{ParseIntError, TryFromIntError},
     str::Utf8Error,
 };
 
@@ -151,6 +151,10 @@ pub enum Error {
     /// Could not parse an integer
     #[error("Could not parse int: {0}")]
     ParseIntError(#[from] ParseIntError),
+
+    /// Could not convert between integer types
+    #[error("Could not convert between integer types: {0}")]
+    TryFromIntError(#[from] TryFromIntError),
 
     #[error("Invalid column mapping mode: {0}")]
     InvalidColumnMappingMode(String),
